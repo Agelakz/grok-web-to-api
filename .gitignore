@@ -1,0 +1,68 @@
+# Binaries
+/server
+/grok-web-to-api
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+dist/
+build/
+
+# Secrets / session
+.env
+.env.*
+!.env.example
+.cookies/
+*.cookies
+*cookies*.txt
+*_cookies.txt
+*.cookie
+*.session
+
+# Captures / reverse artifacts
+*.har
+*.HAR
+*.pcap
+*.log
+logs/
+
+# Local probes / generated media (tmp leftovers)
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+!docs/**/*.png
+!docs/**/*.jpg
+probe_*.py
+probe_*.json
+probe_*.jsonl
+/tmp/
+
+# Coverage / tooling
+coverage.*
+*.cover
+*.prof
+cpu.out
+mem.out
+
+# Go
+vendor/
+go.work
+go.work.sum
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Docker local overrides
+docker-compose.override.yml
