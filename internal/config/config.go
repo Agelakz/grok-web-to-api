@@ -26,6 +26,7 @@ type GrokConfig struct {
 	// CookieFile = Netscape cookies.txt from browser export
 	CookieFile string
 	// Cookies = full Cookie header blob (optional alt to file)
+	// Also composed from GROK_SSO / GROK_SSO_RW / ... when set.
 	Cookies string
 	// Legacy X placeholders (unused by grok.com SSO)
 	AuthToken string
@@ -49,8 +50,27 @@ const (
 	defaultBaseURL         = "https://grok.com"
 )
 
+// per-cookie env → Cookie header parts (script-friendly).
+// Order matches essentialCookieNames in grok/cookies.go.
+var cookieEnvParts = []struct {
+	env  string
+	name string
+}{
+	{"GROK_SSO", "sso"},
+	{"GROK_SSO_RW", "sso-rw"},
+	{"GROK_USER_ID", "x-userid"},
+	{"GROK_CF_CLEARANCE", "cf_clearance"},
+	{"GROK_CF_BM", "__cf_bm"},
+	{"GROK_DEVICE_ID", "grok_device_id"},
+}
+
 func New() (*Config, error) {
 	_ = godotenv.Load()
+
+	cookies := strings.TrimSpace(os.Getenv("GROK_COOKIES"))
+	if cookies == "" {
+		cookies = composeCookiesFromEnv()
+	}
 
 	cfg := &Config{
 		LogLevel: getEnv("LOG_LEVEL", defaultLogLevel),
@@ -60,7 +80,7 @@ func New() (*Config, error) {
 		Grok: GrokConfig{
 			BaseURL:         strings.TrimRight(getEnv("GROK_BASE_URL", defaultBaseURL), "/"),
 			CookieFile:      os.Getenv("GROK_COOKIE_FILE"),
-			Cookies:         os.Getenv("GROK_COOKIES"),
+			Cookies:         cookies,
 			AuthToken:       os.Getenv("GROK_AUTH_TOKEN"),
 			CT0:             os.Getenv("GROK_CT0"),
 			RefreshInterval: getEnvInt("GROK_REFRESH_INTERVAL", defaultRefreshInterval),
@@ -77,6 +97,20 @@ func New() (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// composeCookiesFromEnv builds Cookie header from GROK_SSO / GROK_SSO_RW / ...
+// Empty vars skipped. Returns "" if none set.
+func composeCookiesFromEnv() string {
+	parts := make([]string, 0, len(cookieEnvParts))
+	for _, p := range cookieEnvParts {
+		v := strings.TrimSpace(os.Getenv(p.env))
+		if v == "" {
+			continue
+		}
+		parts = append(parts, p.name+"="+v)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Validate keeps boot soft: cookies optional so HTTP surface still smokes.

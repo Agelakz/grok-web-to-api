@@ -29,7 +29,8 @@ Setiap chat/image-gen call = **conversation temporary** baru (`is_temporary: tru
 
 ```bash
 cp .env.example .env
-# set GROK_COOKIE_FILE ke Netscape cookies.txt (login https://grok.com)
+# isi cookie — path (A) file, (B) per-cookie env, atau (C) GROK_COOKIES
+# lihat ## Cookies / auth
 
 go run ./cmd/server
 # atau: go build -o server ./cmd/server && ./server
@@ -67,21 +68,319 @@ Python smoke: `python3 examples/openai_client.py`
 
 ---
 
+## Cara pakai (script)
+
+Base default: `http://127.0.0.1:4982`  
+Alias path: `/openai/v1/*` **dan** `/v1/*` (sama).
+
+### 1. Start server + cookie
+
+```bash
+cd /path/to/grok-web-to-api
+cp .env.example .env
+
+# path B (enak script) — paste value dari browser DevTools → Application → Cookies → grok.com
+# atau path A: GROK_COOKIE_FILE=/path/to/grok.com_cookies.txt
+
+cat >> .env <<'EOF'
+GROK_SSO=...
+GROK_SSO_RW=...
+GROK_USER_ID=...
+GROK_CF_CLEARANCE=...
+EOF
+
+go build -o server ./cmd/server
+./server
+# log: listening :4982 ; health must show grok_ready=true
+```
+
+One-shot tanpa `.env` file:
+
+```bash
+export GROK_SSO='...' GROK_SSO_RW='...' GROK_USER_ID='...' GROK_CF_CLEARANCE='...'
+./server
+```
+
+Cek ready:
+
+```bash
+curl -s localhost:4982/health | jq '{grok_ready,has_cookies,user_id,reverse}'
+# harap: grok_ready=true
+```
+
+### 2. curl
+
+```bash
+BASE=http://127.0.0.1:4982
+
+# models
+curl -s "$BASE/openai/v1/models" | jq
+
+# chat text
+curl -s "$BASE/openai/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"fast","messages":[{"role":"user","content":"Reply with exactly: PONG"}]}' \
+  | jq -r '.choices[0].message.content'
+
+# image generate → URL
+curl -s "$BASE/openai/v1/images/generations" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"fast","prompt":"a simple blue circle on white","n":1,"response_format":"url"}' \
+  | jq -r '.data[0].url'
+
+# image generate → file lokal (b64)
+curl -s "$BASE/openai/v1/images/generations" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"fast","prompt":"red square","n":1,"response_format":"b64_json"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > out.jpg
+```
+
+Vision (data URI; image ≥ ~64×64) — body JSON lebih gampang lewat Python:
+
+```bash
+python3 - <<'PY'
+import base64, json, os, urllib.request
+BASE = os.environ.get("GROK_API_BASE", "http://127.0.0.1:4982")
+b = open("sample.png", "rb").read()
+uri = "data:image/png;base64," + base64.b64encode(b).decode()
+body = {
+    "model": "fast",
+    "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "apa di gambar?"},
+        {"type": "image_url", "image_url": {"url": uri}},
+    ]}],
+}
+req = urllib.request.Request(
+    BASE + "/openai/v1/chat/completions",
+    data=json.dumps(body).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+print(json.load(urllib.request.urlopen(req))["choices"][0]["message"]["content"])
+PY
+```
+
+### 3. Python stdlib (no deps)
+
+```bash
+export GROK_API_BASE=http://127.0.0.1:4982
+python3 examples/openai_client.py
+```
+
+Atau inline:
+
+```python
+import json, os, urllib.request
+
+BASE = os.environ.get("GROK_API_BASE", "http://127.0.0.1:4982")
+
+def post(path, body):
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+
+# chat
+r = post("/openai/v1/chat/completions", {
+    "model": "fast",
+    "messages": [{"role": "user", "content": "hi"}],
+})
+print(r["choices"][0]["message"]["content"])
+
+# image gen
+r = post("/openai/v1/images/generations", {
+    "model": "fast",
+    "prompt": "blue circle",
+    "n": 1,
+    "response_format": "url",
+})
+print(r["data"][0]["url"])
+```
+
+### 4. OpenAI Python SDK (point ke proxy)
+
+```bash
+pip install openai
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:4982/openai/v1",  # atau .../v1
+    api_key="not-needed",  # proxy gak cek key
+)
+
+# text
+print(client.chat.completions.create(
+    model="fast",
+    messages=[{"role": "user", "content": "hi"}],
+).choices[0].message.content)
+
+# vision (data URI)
+import base64
+b64 = base64.b64encode(open("sample.png", "rb").read()).decode()
+print(client.chat.completions.create(
+    model="fast",
+    messages=[{"role": "user", "content": [
+        {"type": "text", "text": "apa di gambar?"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+    ]}],
+).choices[0].message.content)
+
+# image generate
+img = client.images.generate(
+    model="fast",
+    prompt="a simple blue circle on white",
+    n=1,
+    response_format="url",
+)
+print(img.data[0].url)
+```
+
+### 5. Docker
+
+```bash
+docker build -t grok-web-to-api .
+
+# path B env
+docker run --rm -p 4982:4982 \
+  -e GROK_SSO -e GROK_SSO_RW -e GROK_USER_ID -e GROK_CF_CLEARANCE \
+  grok-web-to-api
+
+# path A file
+docker run --rm -p 4982:4982 --env-file .env \
+  -v /path/to/grok.com_cookies.txt:/cookies.txt:ro \
+  -e GROK_COOKIE_FILE=/cookies.txt \
+  grok-web-to-api
+```
+
+### Catatan script
+
+| tip | detail |
+|---|---|
+| health dulu | `grok_ready=false` → cookie belum valid / expired |
+| model | `fast` / `auto` / `expert` (dari `/models`); string lain sering di-map `auto` |
+| vision | **data URI only**; remote `https://` image **belum** |
+| vision size | min ~64×64; 1×1 gagal |
+| image gen | `n` 1..4; `response_format` `url` \| `b64_json`; `size` no-op |
+| stream | `stream=true` → **501** |
+| multi-turn | tiap call = conversation temporary baru |
+| timeout | image gen bisa 30–90s; set client timeout long |
+| auth proxy | gak butuh `Authorization` header (kecuali lo tambah sendiri di depan) |
+
+---
+
 ## Cookies / auth
 
-1. Login `https://grok.com`
-2. Export **Netscape** cookies (ext: Get cookies.txt LOCALLY, dll.)
-3. `.env`: `GROK_COOKIE_FILE=/path/to/grok.com_cookies.txt`
+Login `https://grok.com` dulu. Pilih **1 path** di `.env` / shell.
 
-Wajib berguna: `sso`, `sso-rw`. Berguna: `x-userid`, `cf_clearance`, `__cf_bm`.
+### Path B — per-cookie env (enak buat script)
 
-Alternatif: `GROK_COOKIES` = full `Cookie` header string.
+```bash
+# .env  — atau export di shell / docker -e
+GROK_SSO=eyJ...                 # wajib
+GROK_SSO_RW=eyJ...              # praktis wajib
+GROK_USER_ID=72d0b43d-....      # x-userid
+GROK_CF_CLEARANCE=....          # recommended
+# optional:
+# GROK_CF_BM=....
+# GROK_DEVICE_ID=....
+```
 
-Boot **soft** tanpa cookie: HTTP surface hidup, `grok_ready=false`, chat/image gagal sampai cookie valid.
+Script one-shot (no file):
 
-Cache runtime: `.cookies/<sha>.json` (gitignore).
+```bash
+export GROK_SSO='...'
+export GROK_SSO_RW='...'
+export GROK_USER_ID='...'
+export GROK_CF_CLEARANCE='...'
+./server
+```
 
-`GROK_AUTH_TOKEN` / `GROK_CT0` = legacy placeholder X — **tidak** dipakai path grok.com.
+Docker:
+
+```bash
+docker run --rm -p 4982:4982 \
+  -e GROK_SSO \
+  -e GROK_SSO_RW \
+  -e GROK_USER_ID \
+  -e GROK_CF_CLEARANCE \
+  grok-web-to-api
+```
+
+Config compose otomatis: `sso=...; sso-rw=...; x-userid=...; cf_clearance=...`  
+(`composeCookiesFromEnv` di `internal/config/config.go`)
+
+### Path C — satu string Cookie
+
+```bash
+GROK_COOKIES='sso=...; sso-rw=...; x-userid=...; cf_clearance=...'
+```
+
+Kalau `GROK_COOKIES` terisi, **menang** atas compose per-cookie env.
+
+### Path A — file Netscape
+
+```bash
+GROK_COOKIE_FILE=/path/to/grok.com_cookies.txt
+```
+
+Export full (ext: **Get cookies.txt LOCALLY**) OK — runtime filter essential.
+
+### Map env → cookie name
+
+| env | cookie | wajib? | role |
+|---|---|---|---|
+| `GROK_SSO` | `sso` | **ya** | login; gate `HasAuth` |
+| `GROK_SSO_RW` | `sso-rw` | ya (praktis) | twin SSO |
+| `GROK_USER_ID` | `x-userid` | ya (praktis) | WS `uid`; fallback probe session |
+| `GROK_CF_CLEARANCE` | `cf_clearance` | recommended | Cloudflare pass |
+| `GROK_CF_BM` | `__cf_bm` | optional | CF bot (TTL pendek) |
+| `GROK_DEVICE_ID` | `grok_device_id` | optional | device fingerprint |
+| `GROK_COOKIES` | (semua di string) | alt | raw header, di-filter essential |
+| `GROK_COOKIE_FILE` | (semua di file) | alt | Netscape, domain `grok.com` only |
+
+**Minimal** biar chat/vision/image-gen jalan: `sso` + `sso-rw` + `x-userid` + `cf_clearance`.
+
+### Dibuang otomatis (noise)
+
+Analytics / ads / consent — **tidak** dikirim:
+
+`Optanon*`, `mp_*_mixpanel`, `__stripe_*`, `_gcl_au`, `_twpid`, `__cuid`, `i18nextLng`, ...
+
+Contoh export 16 baris → kirim ~6.
+
+### Alur load
+
+```
+GROK_COOKIE_FILE (Netscape) ──► parse domain grok.com
+                                      │
+GROK_COOKIES  ──────────────────────► Pairs map ──► Header() = essential only
+                                      │
+GROK_SSO / GROK_SSO_RW / ... ─────────┘
+   (composeCookiesFromEnv, kalau GROK_COOKIES kosong)
+
+legacy GROK_AUTH_TOKEN/CT0 diabaikan path grok.com
+```
+
+Prioritas value: file load dulu, raw/`GROK_COOKIES`/compose override ke `Pairs`.  
+`Header()` **selalu** whitelist essential — noise drop.
+
+- Boot soft tanpa cookie: surface hidup, `grok_ready=false`
+- Cache: `.cookies/<sha>.json` (gitignore)
+- Expired → 401/403 upstream; re-export / re-set env + restart
+
+### Tips
+
+- Ambil dari tab **login** grok.com (bukan x.com)
+- Tanpa `sso` → `HasAuth=false`
+- `cf_clearance` / `__cf_bm` gampang basi (CF)
+- Jangan commit `.env` / `*cookies*.txt` / `.cookies/`
 
 ---
 
@@ -294,13 +593,14 @@ Routes:
 
 | Item | Kegunaan |
 |---|---|
+| `essentialCookieNames` | whitelist: `sso`, `sso-rw`, `x-userid`, `cf_clearance`, `__cf_bm`, `grok_device_id` |
 | `CookieStore` | AuthToken/CT0 legacy, Raw header, File Netscape, Pairs map, cache |
 | `LoadCache` / `SaveCache` | `.cookies/<hash>.json` |
-| `LoadSources` | gabung file + env raw + legacy |
-| `HasAuth` | cukup buat request? (`sso` pair) |
-| `Header` | string `Cookie:` siap kirim |
-| `Get` / `String` | baca nama cookie / debug ringkas |
-| parser Netscape + `k=v; k2=v2` | isi `Pairs` |
+| `LoadSources` | gabung file + env raw + legacy → `Pairs` |
+| `HasAuth` | ada `sso`? (gate request) |
+| `Header` | `Cookie:` **filtered** lewat `joinEssential` |
+| `Get` / `String` | baca 1 nama / debug ringkas |
+| parser Netscape + `k=v; k2=v2` | isi `Pairs` (domain `grok.com` only) |
 
 ### `internal/grok/upload.go`
 
@@ -356,7 +656,13 @@ Tetap track: `.env.example`, source, README.
 | `APP_ENV` | — | dokumentasi / Docker set `production` |
 | `GROK_BASE_URL` | `https://grok.com` | origin + REST/WS host |
 | `GROK_COOKIE_FILE` | — | path Netscape cookies |
-| `GROK_COOKIES` | — | raw Cookie header |
+| `GROK_COOKIES` | — | raw Cookie header (override compose) |
+| `GROK_SSO` | — | cookie `sso` (**wajib** path B) |
+| `GROK_SSO_RW` | — | cookie `sso-rw` |
+| `GROK_USER_ID` | — | cookie `x-userid` |
+| `GROK_CF_CLEARANCE` | — | cookie `cf_clearance` |
+| `GROK_CF_BM` | — | cookie `__cf_bm` (optional) |
+| `GROK_DEVICE_ID` | — | cookie `grok_device_id` (optional) |
 | `GROK_REFRESH_INTERVAL` | `30` | reserved/retry spacing |
 | `GROK_MAX_RETRIES` | `3` | reserved retries |
 | `RATE_LIMIT_ENABLED` | `false` | on/off limiter |

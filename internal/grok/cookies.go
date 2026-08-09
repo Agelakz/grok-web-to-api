@@ -13,6 +13,25 @@ import (
 	"time"
 )
 
+// Essential cookie names for grok.com (ignore analytics/ads noise).
+//
+//	sso        — login session (REQUIRED; HasAuth gate)
+//	sso-rw     — SSO twin, usually exported with sso
+//	x-userid   — WS uid query + identity
+//	cf_clearance — Cloudflare challenge pass
+//	__cf_bm    — CF bot-management (short TTL, optional)
+//	grok_device_id — device fingerprint (optional, stable)
+//
+// Dropped on purpose: Optanon*, mixpanel, stripe, _gcl_au, _twpid, __cuid, i18nextLng, ...
+var essentialCookieNames = []string{
+	"sso",
+	"sso-rw",
+	"x-userid",
+	"cf_clearance",
+	"__cf_bm",
+	"grok_device_id",
+}
+
 // CookieStore holds grok.com web session cookies.
 // Proven names from live export: sso, sso-rw, x-userid, cf_clearance, ...
 type CookieStore struct {
@@ -65,21 +84,18 @@ func (s *CookieStore) Get(name string) string {
 }
 
 // Header builds Cookie header for outbound grok.com requests.
+// Only essential names are sent (see essentialCookieNames).
 func (s *CookieStore) Header() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if raw := strings.TrimSpace(s.Raw); raw != "" {
-		return raw
-	}
-	if len(s.Pairs) > 0 {
-		parts := make([]string, 0, len(s.Pairs))
-		for k, v := range s.Pairs {
-			if k == "" || v == "" {
-				continue
-			}
-			parts = append(parts, k+"="+v)
+	src := s.Pairs
+	if len(src) == 0 {
+		if raw := strings.TrimSpace(s.Raw); raw != "" {
+			src = parseCookieHeader(raw)
 		}
-		return strings.Join(parts, "; ")
+	}
+	if len(src) > 0 {
+		return joinEssential(src)
 	}
 	// legacy
 	parts := make([]string, 0, 2)
@@ -88,6 +104,18 @@ func (s *CookieStore) Header() string {
 	}
 	if s.CT0 != "" {
 		parts = append(parts, "ct0="+s.CT0)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func joinEssential(pairs map[string]string) string {
+	parts := make([]string, 0, len(essentialCookieNames))
+	for _, k := range essentialCookieNames {
+		v := strings.TrimSpace(pairs[k])
+		if v == "" {
+			continue
+		}
+		parts = append(parts, k+"="+v)
 	}
 	return strings.Join(parts, "; ")
 }
